@@ -1,0 +1,2 @@
+[vllm.platform_plugins]
+rocm_wsl = vllm_rocm_wsl:register

@@ -1,0 +1,99 @@
+[tools]
+uv = "latest"
+python = "3.12"
+
+[env]
+# WSLg's /mnt/wslg/runtime-dir is owned by another user; rocm's telemetry socket needs a dir we own
+XDG_RUNTIME_DIR = "{{config_root}}/.run"
+ROCM_RUNTIME_DIR = "{{env.HOME}}/.rocm/runtimes/wheel/release-wheel-multi-arch-7-14-1-e0b6aa5e17021041"
+LLAMA_SERVER_DIR = "{{env.HOME}}/.rocm/runtimes/wheel/release-wheel-multi-arch-7-14-1-e0b6aa5e17021041/engines/lemonade/runtime/bin/llamacpp/rocm-stable/llama-b9752"
+# vLLM rebuilt for gfx1152 by `mise run vllm:build` (rocm's own vLLM wheel lacks gfx1152 kernels)
+VLLM_VENV = "{{config_root}}/.vllm-gfx1152"
+# TheRock ROCm build for this GPU (gfx1152) that rocm serve puts on ROCM_PATH/LD_LIBRARY_PATH for llama-server
+THEROCK_DIR = "{{env.HOME}}/.rocm/runtimes/wheel/release-wheel-multi-arch-7-14-1-e0b6aa5e17021041/engines/lemonade/runtime/bin/therock/gfx1152-7.13.0"
+CPU_MODEL_REPO = "unsloth/Qwen3-0.6B-GGUF:Q4_K_M"
+SERVE_PORT = "11435"
+# Upstream llama.cpp release used by serve:gpu:vulkan-win (native Windows, Vulkan)
+WIN_LLAMA_BUILD = "b11514"
+# ~/.cache/huggingface is root-owned here, so keep model downloads in the workspace
+LLAMA_CACHE = "{{config_root}}/.models"
+HF_HOME = "{{config_root}}/.models/hf"
+# Use uv to create/activate a .venv with Python 3.12 whenever you enter this dir
+_.python.venv = { path = ".venv", create = true, uv_create_args = ["--seed"], python = "3.12" }
+
+[tasks."serve:cpu:llama"]
+description = "CPU: Qwen3-0.6B via the bundled llama-server (-ngl 0) on :11435 [works]"
+file = "scripts/serve-cpu-llama.sh"
+
+[tasks."serve:cpu:llama:stop"]
+description = "Stop the llama-server started by serve:cpu:llama"
+file = "scripts/serve-llama-stop.sh"
+env = { LLAMA_ALIAS = "cpu-model" }
+
+[tasks."serve:gpu:llama"]
+description = "GPU (ROCm/WSL): gemma-4-26B via the bundled llama-server (-ngl 99) [works: ~5 min load, ~5 tok/s]"
+file = "scripts/serve-gpu-llama.sh"
+
+[tasks."serve:gpu:llama:stop"]
+description = "Stop the llama-server started by serve:gpu:llama"
+file = "scripts/serve-llama-stop.sh"
+env = { LLAMA_ALIAS = "gpu-model" }
+
+[tasks."serve:gpu:rocm"]
+description = "GPU (ROCm/WSL): gemma-4-26B via rocm serve + Lemonade [FAILS: rocm hardcodes a 2-min load limit, gemma needs ~5]"
+file = "scripts/serve-gpu-rocm.sh"
+
+[tasks."serve:gpu:rocm:small"]
+description = "GPU (ROCm/WSL): Qwen3-0.6B via rocm serve + Lemonade [works]"
+file = "scripts/serve-gpu-rocm.sh"
+env = { GPU_MODEL = "unsloth/Qwen3-0.6B-GGUF:Q4_K_M" }
+
+[tasks."serve:gpu:rocm:vllm"]
+description = "GPU (ROCm/WSL): Qwen3-0.6B via rocm serve + vLLM [works: ~90 s start, ~29 tok/s; needs vllm:build + OpenMPI]"
+file = "scripts/serve-gpu-rocm.sh"
+# WSL: vllm-wsl/ is a vLLM platform plugin standing in for amdsmi (cannot see the GPU there);
+# the V2 model runner needs pinned-memory UVA, which vLLM disables on WSL, so use V1
+# and vllm:build provides gfx1152 kernels, used via ROCM_CLI_VLLM_PYTHON
+env = { ROCM_ENGINE = "vllm", GPU_MODEL = "Qwen/Qwen3-0.6B", ROCM_CLI_VLLM_READY_TIMEOUT_SECS = "900", PYTHONPATH = "{{config_root}}/vllm-wsl", VLLM_USE_V2_MODEL_RUNNER = "0", VLLM_GPU_MEMORY_UTILIZATION = "0.2", ROCM_CLI_VLLM_PYTHON = "{{config_root}}/.vllm-gfx1152/bin/python" }
+
+[tasks."vllm:build"]
+description = "Build vLLM from source for gfx1152 into .vllm-gfx1152 (~15 min; required by serve:gpu:rocm:vllm; re-runnable)"
+file = "scripts/vllm-build.sh"
+
+[tasks."serve:gpu:rocm:stop"]
+description = "Stop all running rocm serve services (any port, any model)"
+file = "scripts/serve-rocm-stop.sh"
+
+[tasks."serve:gpu:vulkan-win"]
+description = "GPU (Windows/Vulkan): gemma-4-26B via native llama-server.exe, launched from WSL [works, fastest: ~48 s load, ~11 tok/s]"
+file = "scripts/serve-gpu-vulkan-win.sh"
+
+[tasks."serve:gpu:vulkan-win:stop"]
+description = "Stop the Windows llama-server.exe started by serve:gpu:vulkan-win"
+file = "scripts/serve-vulkan-win-stop.sh"
+
+[tasks."serve:test"]
+description = "Smoke-test whichever server is on SERVE_PORT with a chat completion"
+file = "scripts/serve-test.sh"
+
+[tasks.rocm]
+description = "Run the rocm CLI with an isolated XDG_RUNTIME_DIR under ./.run (workspace-local, not $HOME)"
+file = "scripts/rocm.sh"
+
+[tasks.webui]
+description = "Open WebUI in a wslc container at http://localhost:3000, using whichever serve:* task is on SERVE_PORT"
+file = "scripts/webui.sh"
+
+[tasks."webui:stop"]
+description = "Stop and remove the Open WebUI container (chat data stays in the open-webui volume)"
+run = "wslc.exe remove -f open-webui >/dev/null 2>&1 && echo \"Removed open-webui container\" || echo \"No open-webui container\""
+
+[tasks."stop:all"]
+description = "Stop everything: both llama-servers, all rocm services, Windows llama-server.exe, and the Open WebUI container"
+run = [
+  "mise run serve:cpu:llama:stop",
+  "mise run serve:gpu:llama:stop",
+  "mise run serve:gpu:rocm:stop",
+  "mise run serve:gpu:vulkan-win:stop",
+  "mise run webui:stop",
+]

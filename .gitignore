@@ -1,0 +1,7 @@
+# generated / large: model cache, vLLM source + wheels, venvs, rocm runtime state
+.build/
+.models/
+.run/
+.venv/
+.vllm-gfx1152/
+__pycache__/
